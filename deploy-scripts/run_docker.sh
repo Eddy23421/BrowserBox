@@ -40,25 +40,61 @@ print_instructions() {
   echo "5. Ensure these files are for the domain you want to serve BrowserBox from (i.e., the domain of the current machine)."
 }
 
+# cert getting func
+# NEW: Function to provision certificates
+provision_certs() {
+  mkdir -p "$certDir"
+  read -p "Please enter the desired hostname (e.g., localhost or example.com): " user_hostname
+
+  if [[ $user_hostname == "localhost" || $user_hostname == "192.168."* || $user_hostname == "10."* || $user_hostname == "172.16."* ]]; then
+    # Check if mkcert is installed
+    if ! command -v mkcert &> /dev/null; then
+      echo "mkcert is not installed. Installing now..."
+
+      # Detect the operating system
+      os_type=$(uname)
+      if [[ "$os_type" == "Linux" ]]; then
+        # Install mkcert on Linux (Ubuntu as example)
+        sudo apt-get update && sudo apt-get install mkcert
+      elif [[ "$os_type" == "Darwin" ]]; then
+        # Install mkcert on macOS
+        brew install mkcert
+      else
+        echo "Unsupported OS. Please install mkcert manually."
+        exit 1
+      fi
+    fi
+
+    # Use mkcert for localhost or link-local addresses
+    echo "Generating certificates using mkcert..."
+    mkcert -install
+    mkcert -cert-file "$certDir/fullchain.pem" -key-file "$certDir/privkey.pem" "$user_hostname"
+  else
+    # Use deploy-scripts/tls for public hostname
+    echo "Generating certificates for public hostname using deploy-scripts/tls..."
+    bash <(curl -s https://raw.githubusercontent.com/BrowserBox/BrowserBox/2034ab18fd5410f3cd78b6d1d1ae8d099e8cf9e1/deploy-scripts/tls.sh) "$user_hostname"
+  fi
+}
+
 # Check if directory exists
 # Check if certificate and key files exist
 if [ -d "$certDir" ]; then
     if [ -f "$certFile" ] && [ -f "$keyFile" ]; then
-        # the read permission is so the key file can be used by the application
-        # inside the container
-        # otherwise HTTPS won't work and that breaks the app
-        chmod 644 $certDir/*.pem
         echo "Great job! Your SSL/TLS/HTTPS certificates are all set up correctly. You're ready to go!"
     else
         echo "Almost there! Your 'sslcerts' directory exists, but it seems you're missing some certificate files."
-        print_instructions
-        exit 1
+        provision_certs
     fi
 else
     echo "Looks like you're missing the 'sslcerts' directory."
-    print_instructions
-    exit 1
+    provision_certs
 fi
+
+# correct perms on certs
+# the read permission is so the key file can be used by the application
+# inside the container
+# otherwise HTTPS won't work and that breaks the app
+chmod 644 $certDir/*.pem
 
 # Get the hostname
 
@@ -74,10 +110,8 @@ if [[ -f "$ssl_dir/privkey.pem" && -f "$ssl_dir/fullchain.pem" ]]; then
   echo "Hostname: $hostname" >&2
   output="$hostname"
 else
-  # Get the IP address (you can also use other methods to get the IP)
-  ip_address=$(hostname -I | awk '{print $1}')
-  echo "IP Address: $ip_address" >&2
-  output="$ip_address"
+  echo "Certs don't exist!" >&2
+  exit 1
 fi
 
 echo "$output"
@@ -95,7 +129,7 @@ else
 fi
 
 # Run the container with the appropriate port mappings and capture the container ID
-CONTAINER_ID=$(sudo docker run -v $HOME/sslcerts:/home/bbpro/sslcerts -d -p $PORT:8080 -p $(($PORT-2)):8078 -p $(($PORT-1)):8079 -p $(($PORT+1)):8081 -p $(($PORT+2)):8082 --cap-add=SYS_ADMIN ghcr.io/browserbox/browserbox:v5 bash -c 'echo $(setup_bbpro --port 8080) > login_link.txt; ( bbpro || true ) && tail -f /dev/null')
+CONTAINER_ID=$(sudo docker run --platform linux/amd64 -v $HOME/sslcerts:/home/bbpro/sslcerts -d -p $PORT:8080 -p $(($PORT-2)):8078 -p $(($PORT-1)):8079 -p $(($PORT+1)):8081 -p $(($PORT+2)):8082 --cap-add=SYS_ADMIN ghcr.io/browserbox/browserbox:v5 bash -c 'echo $(setup_bbpro --port 8080) > login_link.txt; ( bbpro || true ) && tail -f /dev/null')
 
 # Wait for a few seconds to make sure the container is up and running
 echo "Waiting a few seconds for container to start..."
